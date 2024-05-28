@@ -1,0 +1,10 @@
+{
+	"id": "nostr-wiki",
+	"name": "NOSTR Wiki",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Publish obsidian notes as a NOSTR wiki event",
+	"author": "borrakkor",
+	"authorUrl": "https://git.brakke.cc",
+	"isDesktopOnly": false
+}
