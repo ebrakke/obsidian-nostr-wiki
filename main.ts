@@ -1,17 +1,20 @@
-import { App, Editor, Modal, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, Modal, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, parseFrontMatterTags, getFrontMatterInfo } from 'obsidian';
 import NDK, { NDKEvent, NDKPrivateKeySigner, } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 
 const now = () => Math.floor(Date.now() / 1000);
+const FRONTMATTER_REGEX = /^---\n(.*?\n)*?---\n/g
 
 // Remember to rename these classes and interfaces!
 
 interface NostrWikiSettings {
 	privateKey: string;
+	relays: string;
 }
 
 const DEFAULT_SETTINGS: NostrWikiSettings = {
-	privateKey: 'nsec...'
+	privateKey: 'nsec...',
+	relays: 'wss://nos.lol'
 }
 
 export default class NostrWiki extends Plugin {
@@ -19,10 +22,11 @@ export default class NostrWiki extends Plugin {
 	ndk: NDK;
 	async onload() {
 		await this.loadSettings();
+		const relays = this.settings.relays.split(',').map(r => r.trim())
 		const decoded = nip19.decode(this.settings.privateKey);
 		const signer = new NDKPrivateKeySigner(decoded.data)
 		this.ndk = new NDK({
-			explicitRelayUrls: ['wss://nos.lol'],
+			explicitRelayUrls: relays,
 			signer
 		});
 		await this.ndk.connect();
@@ -31,13 +35,16 @@ export default class NostrWiki extends Plugin {
 		this.addCommand({
 			id: 'nostr-wiki-publish',
 			name: 'Publish the current page',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				const title = view.titleEl.innerHTML as string;
+			editorCallback: async (editor, view: MarkdownView) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return;
+				const withoutFrontmatter = stripFrontmatter(view.data);
+				const metadata = this.app.metadataCache.getFileCache(file);
+				const title = file.basename
 				const existingEvent = await this.getExistingEvent(title);
-				const data = view.data;
 				new PublishModal(this.app, async category => {
 					new Notice("Publishing your event...")
-					await this.publishEvent(title, data, existingEvent, category)
+					await this.publishEvent(title, withoutFrontmatter, existingEvent, category, metadata?.frontmatter)
 					new Notice("Event has been published");
 				}, existingEvent).open();
 
@@ -57,7 +64,7 @@ export default class NostrWiki extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	async publishEvent(title: string, data: string, existingEvent?: NDKEvent | null, category?: string) {
+	async publishEvent(title: string, data: string, existingEvent?: NDKEvent | null, category?: string, frontmatter?: Record<string, string>) {
 		const event = new NDKEvent(this.ndk);
 		event.kind = 30818;
 		event.content = data
@@ -70,6 +77,11 @@ export default class NostrWiki extends Plugin {
 		}
 		if (category) {
 			event.tags.push(['c', category])
+		}
+		if (frontmatter) {
+			Object.keys(frontmatter).forEach(k => {
+				event.tags.push([k, frontmatter[k]])
+			})
 		}
 
 		await event.publish();
@@ -91,7 +103,10 @@ const normalizeTitle = (title: string) => {
 	return title.toLowerCase().replaceAll(' ', '-');
 }
 
-
+const stripFrontmatter = (data: string) => {
+	const stripped = data.replaceAll(FRONTMATTER_REGEX, '')
+	return stripped
+}
 
 
 class NostrWikiSettingsTab extends PluginSettingTab {
@@ -115,6 +130,16 @@ class NostrWikiSettingsTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.privateKey)
 				.onChange(async (value) => {
 					this.plugin.settings.privateKey = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('relays')
+			.setDesc('List of relays to connect to, separated by a ,')
+			.addText(text => text
+				.setValue(this.plugin.settings.relays)
+				.onChange(async (value) => {
+					this.plugin.settings.relays = value;
 					await this.plugin.saveSettings();
 				}));
 	}
@@ -159,3 +184,4 @@ export class PublishModal extends Modal {
 		contentEl.empty();
 	}
 }
+
